@@ -1,5 +1,6 @@
 # serverless-data-pipeline
 
+
 ## Description
 This project implements a serverless data pipeline for extracting data from the Colombo Stock Market ASI Index API. The pipeline uses an AWS Lambda function to fetch the data and load it into an Amazon Kinesis Firehose Delivery Stream. The Firehose stream then writes the data to an Amazon S3 bucket, buffering the data either for 5 minutes or until it reaches 5KB in size.
 
