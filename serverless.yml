@@ -1,0 +1,125 @@
+service: serverless-data-pipeline
+frameworkVersion: '3'
+package:
+  exclude:
+    - '**/*'
+  include:
+    - 'data-extractor.py'
+provider:
+  name: aws
+  runtime: python3.9
+  region: us-east-1
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - 's3:*'
+            - 'cloudwatch:*'
+            - 'logs:*'
+            - 'firehose:*'
+          Resource: '*'
+  lambdaHashingVersion: 20201221
+functions:
+  data_extractor_lambda:
+    handler: data-extractor.lambda_handler
+    timeout: 300
+    environment:
+      FIREHOSE_NAME: !Ref FirehoseDeliveryStream
+    events:
+      - schedule:
+          name: DataExtractor-Lambda-Schedule
+          rate: cron(0 8 * * ? *)
+
+resources:
+  Resources:
+    SQSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-s3-event-notification-queue
+    S3BucketRawData:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: cse-aspi-index-raw-data-bucket
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:*
+              Queue: !GetAtt SQSQueue.Arn
+    SQSQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SQSQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: '*'
+              Action: sqs:*
+              Resource: !GetAtt SQSQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !GetAtt S3BucketRawData.Arn
+            - Effect: Allow
+              Principal:
+                AWS: !GetAtt ExecutionIAMRole.Arn
+              Action: sqs:*
+              Resource: !GetAtt SQSQueue.Arn
+    S3BucketParquetData:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: cse-aspi-index-parquet-data-bucket
+    S3BucketProdData:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: cse-aspi-index-prod-table-data-bucket
+    S3BucketOutputData:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: athena-query-results-output-data-bucket
+    ExecutionIAMRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:service}-execution-role
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                - firehose.amazonaws.com
+                - glue.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: '${self:service}-execution-role-policy'
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:*
+                    - sqs:*
+                    - glue:*
+                    - athena:*
+                  Resource:
+                    - '*'
+                - Effect: Allow
+                  Action:
+                    - logs:*
+                  Resource:
+                     - '*'
+    FirehoseDeliveryStream:
+      Type: AWS::KinesisFirehose::DeliveryStream
+      Properties:
+        DeliveryStreamType: DirectPut
+        S3DestinationConfiguration:
+          BucketARN: !GetAtt S3BucketRawData.Arn
+          RoleARN: !GetAtt ExecutionIAMRole.Arn
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 5
+          CompressionFormat: UNCOMPRESSED
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub "/aws/kinesisfirehose/${AWS::StackName}/delivery"
+          LogStreamName: !Sub "${AWS::StackName}-firehose-delivery-stream"
